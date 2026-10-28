@@ -451,26 +451,26 @@ def main():
             unsafe_allow_html=True,
         )
 
+        # تم تعديل هذا القسم حتى لا تظهر وسوم HTML ككود
         st.markdown(
             """
-            <div class="section-card">
-                <div class="section-title">
-                    Verification Information
-                </div>
-
-                <p>
-                    Enter your username and password,
-                    then draw your signature in the
-                    signature area.
-                </p>
-
-                <p>
-                    The final version will compare the
-                    signature with the trained CNN model.
-                </p>
-            </div>
-            """,
+<div class="section-card">
+    <div class="section-title">
+        Verification Information
+    </div>
+</div>
+""",
             unsafe_allow_html=True,
+        )
+
+        st.write(
+            "Enter your username and password, then draw your "
+            "signature in the signature area."
+        )
+
+        st.write(
+            "The final version will compare the signature with "
+            "the trained CNN model."
         )
 
     # --------------------------------------------------
