@@ -23,24 +23,14 @@ DATABASE_FILE = BASE_DIR / "verification_history.db"
 IMAGE_SIZE = (224, 224)
 
 
-# --------------------------------------------------
-# Demo users and codes
-# --------------------------------------------------
-
-DEMO_USERS = {
-    "person_1": "0000",
-    "person_2": "1111",
-    "person_3": "2222",
-    "person_4": "3333",
-    "person_5": "4444",
-}
-
-
 def load_users():
     try:
         configured_users = st.secrets["users"]
-    except (FileNotFoundError, KeyError):
-        return DEMO_USERS, True
+    except (FileNotFoundError, KeyError) as error:
+        raise RuntimeError(
+            "User codes are not configured. Add them in "
+            "Streamlit Cloud Secrets."
+        ) from error
 
     users = {
         str(person): str(code)
@@ -50,7 +40,7 @@ def load_users():
     if not users:
         raise ValueError("The users section in secrets is empty.")
 
-    return users, False
+    return users
 
 
 def get_admin_code():
@@ -463,13 +453,7 @@ def main():
     apply_custom_style()
     initialize_state()
     initialize_database()
-    users, using_demo_codes = load_users()
-
-    if using_demo_codes:
-        st.warning(
-            "Demo codes are active. Configure Streamlit secrets "
-            "before using real users."
-        )
+    users = load_users()
 
     st.markdown(
         """

@@ -2,9 +2,9 @@
 
 ## Security settings
 
-The application uses demo access codes only when Streamlit secrets are not
-configured. For deployment, add these values in the app's Streamlit Cloud
-secrets settings:
+The application requires access codes in Streamlit secrets. It does not
+contain fallback or demo codes in the source code. Add these values in the
+app's Streamlit Cloud secrets settings:
 
 ```toml
 [users]
