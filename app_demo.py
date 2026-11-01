@@ -558,7 +558,13 @@ def main():
         if verify_button:
             expected_code = users[selected_person]
 
-            if not hmac.compare_digest(code, expected_code):
+            submitted_code = str(code)
+            configured_code = str(expected_code)
+
+            if not hmac.compare_digest(
+                submitted_code.encode("utf-8"),
+                configured_code.encode("utf-8"),
+            ):
                 st.error("Incorrect access code.")
 
             elif not st.session_state.signature_exists:
