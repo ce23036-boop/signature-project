@@ -2,11 +2,12 @@ from datetime import datetime
 from pathlib import Path
 import hmac
 import json
-import sqlite3
 
 import numpy as np
+import pandas as pd
 import streamlit as st
 import tensorflow as tf
+from supabase import Client, create_client
 from streamlit_drawable_canvas import st_canvas
 
 
@@ -18,8 +19,6 @@ BASE_DIR = Path(__file__).resolve().parent
 
 MODEL_FILE = BASE_DIR / "artifacts" / "signature_model.keras"
 CLASSES_FILE = BASE_DIR / "artifacts" / "class_names.json"
-DATABASE_FILE = BASE_DIR / "verification_history.db"
-
 IMAGE_SIZE = (224, 224)
 
 
@@ -48,6 +47,25 @@ def get_admin_code():
         return str(st.secrets["admin_code"])
     except (FileNotFoundError, KeyError):
         return ""
+
+
+@st.cache_resource
+def get_supabase_client() -> Client:
+    try:
+        supabase_url = str(st.secrets["SUPABASE_URL"])
+        supabase_key = str(st.secrets["SUPABASE_SECRET_KEY"])
+    except (FileNotFoundError, KeyError) as error:
+        raise RuntimeError(
+            "Supabase is not configured. Add SUPABASE_URL and "
+            "SUPABASE_SECRET_KEY in Streamlit secrets."
+        ) from error
+
+    if not supabase_url or not supabase_key:
+        raise RuntimeError(
+            "SUPABASE_URL and SUPABASE_SECRET_KEY cannot be empty."
+        )
+
+    return create_client(supabase_url, supabase_key)
 
 
 # --------------------------------------------------
@@ -196,24 +214,6 @@ def initialize_state():
             st.session_state[key] = value
 
 
-def initialize_database():
-    with sqlite3.connect(DATABASE_FILE) as connection:
-        connection.execute(
-            """
-            CREATE TABLE IF NOT EXISTS verification_history (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                timestamp TEXT NOT NULL,
-                person TEXT NOT NULL,
-                predicted_class TEXT NOT NULL,
-                result TEXT NOT NULL,
-                confidence REAL NOT NULL,
-                processing_time REAL NOT NULL
-            )
-            """
-        )
-        connection.commit()
-
-
 # --------------------------------------------------
 # Load trained model
 # --------------------------------------------------
@@ -282,31 +282,16 @@ def save_verification_log(
     confidence,
     processing_time,
 ):
-    initialize_database()
-
-    with sqlite3.connect(DATABASE_FILE) as connection:
-        connection.execute(
-            """
-            INSERT INTO verification_history (
-                timestamp,
-                person,
-                predicted_class,
-                result,
-                confidence,
-                processing_time
-            )
-            VALUES (?, ?, ?, ?, ?, ?)
-            """,
-            (
-                datetime.now().isoformat(timespec="seconds"),
-                selected_person,
-                predicted_class,
-                result,
-                round(confidence, 2),
-                round(processing_time, 3),
-            ),
-        )
-        connection.commit()
+    client = get_supabase_client()
+    client.table("verification_history").insert(
+        {
+            "person": selected_person,
+            "predicted_class": predicted_class,
+            "result": result,
+            "confidence": round(confidence, 2),
+            "processing_time": round(processing_time, 3),
+        }
+    ).execute()
 
 
 # --------------------------------------------------
@@ -402,30 +387,21 @@ def show_history():
     if not hmac.compare_digest(entered_code, admin_code):
         return
 
-    initialize_database()
-
-    with sqlite3.connect(DATABASE_FILE) as connection:
-        rows = connection.execute(
-            """
-            SELECT timestamp, person, predicted_class,
-                   result, confidence, processing_time
-            FROM verification_history
-            ORDER BY id DESC
-            LIMIT 10
-            """
-        ).fetchall()
+    client = get_supabase_client()
+    response = (
+        client.table("verification_history")
+        .select(
+            "created_at, person, predicted_class, result, "
+            "confidence, processing_time"
+        )
+        .order("created_at", desc=True)
+        .limit(10)
+        .execute()
+    )
+    rows = response.data or []
 
     if not rows:
         return
-
-    columns = [
-        "timestamp",
-        "person",
-        "predicted_class",
-        "result",
-        "confidence",
-        "processing_time",
-    ]
 
     st.markdown(
         """
@@ -439,7 +415,7 @@ def show_history():
     )
 
     st.dataframe(
-        [dict(zip(columns, row)) for row in rows],
+        pd.DataFrame(rows),
         use_container_width=True,
         hide_index=True,
     )
@@ -452,7 +428,6 @@ def show_history():
 def main():
     apply_custom_style()
     initialize_state()
-    initialize_database()
     users = load_users()
 
     st.markdown(

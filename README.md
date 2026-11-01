@@ -18,9 +18,15 @@ admin_code = "replace-with-a-private-admin-code"
 ```
 
 The application never writes access codes or signature images to the
-verification history. History is stored as metadata in SQLite and is visible
+verification history. History is stored as metadata in Supabase and is visible
 only after entering `admin_code` in the sidebar.
 
-Streamlit Community Cloud storage is ephemeral, so SQLite is suitable for
-demonstration and testing only. Use an external managed database before
-relying on the history for production or compliance purposes.
+Add the Supabase server-side credentials to Streamlit Cloud Secrets:
+
+```toml
+SUPABASE_URL = "https://your-project.supabase.co"
+SUPABASE_SECRET_KEY = "your-server-side-secret-key"
+```
+
+Use a Supabase secret/server-side key, not a publishable key. Never commit
+either value to GitHub.
