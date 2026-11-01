@@ -17,38 +17,21 @@ BASE_DIR = Path(__file__).resolve().parent
 
 MODEL_FILE = BASE_DIR / "artifacts" / "signature_model.keras"
 CLASSES_FILE = BASE_DIR / "artifacts" / "class_names.json"
-
-LOG_DIRECTORY = BASE_DIR / "verification_logs"
-LOG_FILE = LOG_DIRECTORY / "verification_history.csv"
+LOG_FILE = BASE_DIR / "verification_history.csv"
 
 IMAGE_SIZE = (224, 224)
 
 
 # --------------------------------------------------
-# Demo users
+# Demo users and codes
 # --------------------------------------------------
 
 USERS = {
-    "person_1": {
-        "name": "person_1",
-        "code": "0000",
-    },
-    "person_2": {
-        "name": "person_2",
-        "code": "1111",
-    },
-    "person_3": {
-        "name": "person_3",
-        "code": "2222",
-    },
-    "person_4": {
-        "name": "person_4",
-        "code": "3333",
-    },
-    "person_5": {
-        "name": "person_5",
-        "code": "4444",
-    },
+    "person_1": "0000",
+    "person_2": "1111",
+    "person_3": "2222",
+    "person_4": "3333",
+    "person_5": "4444",
 }
 
 
@@ -65,7 +48,7 @@ st.set_page_config(
 
 
 # --------------------------------------------------
-# Style
+# Custom style
 # --------------------------------------------------
 
 def apply_custom_style():
@@ -199,19 +182,19 @@ def initialize_state():
 
 
 # --------------------------------------------------
-# Load model
+# Load trained model
 # --------------------------------------------------
 
 @st.cache_resource
 def load_signature_model():
     if not MODEL_FILE.exists():
         raise FileNotFoundError(
-            f"Model file was not found: {MODEL_FILE}"
+            f"Model file not found: {MODEL_FILE}"
         )
 
     if not CLASSES_FILE.exists():
         raise FileNotFoundError(
-            f"Class names file was not found: {CLASSES_FILE}"
+            f"Class names file not found: {CLASSES_FILE}"
         )
 
     model = tf.keras.models.load_model(MODEL_FILE)
@@ -223,7 +206,7 @@ def load_signature_model():
 
 
 # --------------------------------------------------
-# Prediction
+# Predict signature
 # --------------------------------------------------
 
 def predict_signature(signature_image):
@@ -232,7 +215,7 @@ def predict_signature(signature_image):
     if signature_image.ndim != 3:
         raise ValueError("Invalid signature image.")
 
-    # Canvas image is RGBA; the model expects RGB.
+    # Convert RGBA to RGB.
     image = signature_image[:, :, :3].astype(np.float32)
 
     image = tf.image.resize(
@@ -256,7 +239,7 @@ def predict_signature(signature_image):
 
 
 # --------------------------------------------------
-# Save history
+# Save verification history
 # --------------------------------------------------
 
 def save_verification_log(
@@ -266,8 +249,6 @@ def save_verification_log(
     confidence,
     processing_time,
 ):
-    LOG_DIRECTORY.mkdir(exist_ok=True)
-
     record = pd.DataFrame(
         [
             {
@@ -286,16 +267,26 @@ def save_verification_log(
         ]
     )
 
-    if LOG_FILE.exists():
-        old_records = pd.read_csv(LOG_FILE)
-        records = pd.concat(
-            [old_records, record],
-            ignore_index=True,
-        )
-    else:
-        records = record
+    old_records = pd.DataFrame()
 
-    records.to_csv(
+    if LOG_FILE.exists() and LOG_FILE.stat().st_size > 0:
+        try:
+            old_records = pd.read_csv(LOG_FILE)
+        except (
+            pd.errors.EmptyDataError,
+            pd.errors.ParserError,
+        ):
+            old_records = pd.DataFrame()
+
+    all_records = pd.concat(
+        [
+            old_records,
+            record,
+        ],
+        ignore_index=True,
+    )
+
+    all_records.to_csv(
         LOG_FILE,
         index=False,
         encoding="utf-8-sig",
@@ -386,7 +377,19 @@ def show_history():
     if not LOG_FILE.exists():
         return
 
-    history = pd.read_csv(LOG_FILE)
+    if LOG_FILE.stat().st_size == 0:
+        return
+
+    try:
+        history = pd.read_csv(LOG_FILE)
+    except (
+        pd.errors.EmptyDataError,
+        pd.errors.ParserError,
+    ):
+        return
+
+    if history.empty:
+        return
 
     st.markdown(
         """
@@ -450,7 +453,6 @@ def main():
         selected_person = st.selectbox(
             "Select person",
             options=list(USERS.keys()),
-            format_func=lambda person: USERS[person]["name"],
         )
 
         code = st.text_input(
@@ -460,9 +462,7 @@ def main():
         )
 
         st.markdown(
-            """
-            </div>
-            """,
+            "</div>",
             unsafe_allow_html=True,
         )
 
@@ -543,7 +543,7 @@ def main():
         )
 
         if verify_button:
-            expected_code = USERS[selected_person]["code"]
+            expected_code = USERS[selected_person]
 
             if code != expected_code:
                 st.error("Incorrect access code.")
@@ -598,9 +598,7 @@ def main():
                     )
 
         st.markdown(
-            """
-            </div>
-            """,
+            "</div>",
             unsafe_allow_html=True,
         )
 

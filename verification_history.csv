@@ -1,0 +1,5 @@
+﻿timestamp,person,predicted_class,result,confidence,processing_time
+2026-11-01T19:11:01,person_1,person_1_forged,Forged,45.8,3.772
+2026-11-01T19:11:29,person_1,person_2_genuine,Forged,46.64,0.803
+2026-11-01T19:12:00,person_2,person_1_genuine,Forged,36.08,0.796
+2026-11-01T19:12:19,person_2,person_2_genuine,Original,62.47,0.821

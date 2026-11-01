@@ -1,5 +1,8 @@
-streamlit
-streamlit-drawable-canvas
+tensorflow
+opencv-python
 numpy
 pandas
+scikit-learn
+streamlit
 pillow
+streamlit-drawable-canvas
