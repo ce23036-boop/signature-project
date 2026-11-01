@@ -1,9 +1,10 @@
 from datetime import datetime
 from pathlib import Path
+import hmac
 import json
+import sqlite3
 
 import numpy as np
-import pandas as pd
 import streamlit as st
 import tensorflow as tf
 from streamlit_drawable_canvas import st_canvas
@@ -17,7 +18,7 @@ BASE_DIR = Path(__file__).resolve().parent
 
 MODEL_FILE = BASE_DIR / "artifacts" / "signature_model.keras"
 CLASSES_FILE = BASE_DIR / "artifacts" / "class_names.json"
-LOG_FILE = BASE_DIR / "verification_history.csv"
+DATABASE_FILE = BASE_DIR / "verification_history.db"
 
 IMAGE_SIZE = (224, 224)
 
@@ -26,13 +27,37 @@ IMAGE_SIZE = (224, 224)
 # Demo users and codes
 # --------------------------------------------------
 
-USERS = {
+DEMO_USERS = {
     "person_1": "0000",
     "person_2": "1111",
     "person_3": "2222",
     "person_4": "3333",
     "person_5": "4444",
 }
+
+
+def load_users():
+    try:
+        configured_users = st.secrets["users"]
+    except (FileNotFoundError, KeyError):
+        return DEMO_USERS, True
+
+    users = {
+        str(person): str(code)
+        for person, code in configured_users.items()
+    }
+
+    if not users:
+        raise ValueError("The users section in secrets is empty.")
+
+    return users, False
+
+
+def get_admin_code():
+    try:
+        return str(st.secrets["admin_code"])
+    except (FileNotFoundError, KeyError):
+        return ""
 
 
 # --------------------------------------------------
@@ -181,6 +206,24 @@ def initialize_state():
             st.session_state[key] = value
 
 
+def initialize_database():
+    with sqlite3.connect(DATABASE_FILE) as connection:
+        connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS verification_history (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                timestamp TEXT NOT NULL,
+                person TEXT NOT NULL,
+                predicted_class TEXT NOT NULL,
+                result TEXT NOT NULL,
+                confidence REAL NOT NULL,
+                processing_time REAL NOT NULL
+            )
+            """
+        )
+        connection.commit()
+
+
 # --------------------------------------------------
 # Load trained model
 # --------------------------------------------------
@@ -249,48 +292,31 @@ def save_verification_log(
     confidence,
     processing_time,
 ):
-    record = pd.DataFrame(
-        [
-            {
-                "timestamp": datetime.now().isoformat(
-                    timespec="seconds"
-                ),
-                "person": selected_person,
-                "predicted_class": predicted_class,
-                "result": result,
-                "confidence": round(confidence, 2),
-                "processing_time": round(
-                    processing_time,
-                    3,
-                ),
-            }
-        ]
-    )
+    initialize_database()
 
-    old_records = pd.DataFrame()
-
-    if LOG_FILE.exists() and LOG_FILE.stat().st_size > 0:
-        try:
-            old_records = pd.read_csv(LOG_FILE)
-        except (
-            pd.errors.EmptyDataError,
-            pd.errors.ParserError,
-        ):
-            old_records = pd.DataFrame()
-
-    all_records = pd.concat(
-        [
-            old_records,
-            record,
-        ],
-        ignore_index=True,
-    )
-
-    all_records.to_csv(
-        LOG_FILE,
-        index=False,
-        encoding="utf-8-sig",
-    )
+    with sqlite3.connect(DATABASE_FILE) as connection:
+        connection.execute(
+            """
+            INSERT INTO verification_history (
+                timestamp,
+                person,
+                predicted_class,
+                result,
+                confidence,
+                processing_time
+            )
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (
+                datetime.now().isoformat(timespec="seconds"),
+                selected_person,
+                predicted_class,
+                result,
+                round(confidence, 2),
+                round(processing_time, 3),
+            ),
+        )
+        connection.commit()
 
 
 # --------------------------------------------------
@@ -374,22 +400,42 @@ def show_result():
 # --------------------------------------------------
 
 def show_history():
-    if not LOG_FILE.exists():
+    admin_code = get_admin_code()
+    if not admin_code:
         return
 
-    if LOG_FILE.stat().st_size == 0:
+    entered_code = st.sidebar.text_input(
+        "Admin code",
+        type="password",
+    )
+
+    if not hmac.compare_digest(entered_code, admin_code):
         return
 
-    try:
-        history = pd.read_csv(LOG_FILE)
-    except (
-        pd.errors.EmptyDataError,
-        pd.errors.ParserError,
-    ):
+    initialize_database()
+
+    with sqlite3.connect(DATABASE_FILE) as connection:
+        rows = connection.execute(
+            """
+            SELECT timestamp, person, predicted_class,
+                   result, confidence, processing_time
+            FROM verification_history
+            ORDER BY id DESC
+            LIMIT 10
+            """
+        ).fetchall()
+
+    if not rows:
         return
 
-    if history.empty:
-        return
+    columns = [
+        "timestamp",
+        "person",
+        "predicted_class",
+        "result",
+        "confidence",
+        "processing_time",
+    ]
 
     st.markdown(
         """
@@ -403,7 +449,7 @@ def show_history():
     )
 
     st.dataframe(
-        history.tail(10),
+        [dict(zip(columns, row)) for row in rows],
         use_container_width=True,
         hide_index=True,
     )
@@ -416,6 +462,14 @@ def show_history():
 def main():
     apply_custom_style()
     initialize_state()
+    initialize_database()
+    users, using_demo_codes = load_users()
+
+    if using_demo_codes:
+        st.warning(
+            "Demo codes are active. Configure Streamlit secrets "
+            "before using real users."
+        )
 
     st.markdown(
         """
@@ -452,7 +506,7 @@ def main():
 
         selected_person = st.selectbox(
             "Select person",
-            options=list(USERS.keys()),
+            options=list(users.keys()),
         )
 
         code = st.text_input(
@@ -543,9 +597,9 @@ def main():
         )
 
         if verify_button:
-            expected_code = USERS[selected_person]
+            expected_code = users[selected_person]
 
-            if code != expected_code:
+            if not hmac.compare_digest(code, expected_code):
                 st.error("Incorrect access code.")
 
             elif not st.session_state.signature_exists:
