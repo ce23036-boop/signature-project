@@ -2,11 +2,12 @@ from datetime import datetime
 from pathlib import Path
 import hmac
 import json
-import sqlite3
 
 import numpy as np
+import pandas as pd
 import streamlit as st
 import tensorflow as tf
+from supabase import Client, create_client
 from streamlit_drawable_canvas import st_canvas
 
 
@@ -18,29 +19,17 @@ BASE_DIR = Path(__file__).resolve().parent
 
 MODEL_FILE = BASE_DIR / "artifacts" / "signature_model.keras"
 CLASSES_FILE = BASE_DIR / "artifacts" / "class_names.json"
-DATABASE_FILE = BASE_DIR / "verification_history.db"
-
 IMAGE_SIZE = (224, 224)
-
-
-# --------------------------------------------------
-# Demo users and codes
-# --------------------------------------------------
-
-DEMO_USERS = {
-    "person_1": "0000",
-    "person_2": "1111",
-    "person_3": "2222",
-    "person_4": "3333",
-    "person_5": "4444",
-}
 
 
 def load_users():
     try:
         configured_users = st.secrets["users"]
-    except (FileNotFoundError, KeyError):
-        return DEMO_USERS, True
+    except (FileNotFoundError, KeyError) as error:
+        raise RuntimeError(
+            "User codes are not configured. Add them in "
+            "Streamlit Cloud Secrets."
+        ) from error
 
     users = {
         str(person): str(code)
@@ -50,7 +39,7 @@ def load_users():
     if not users:
         raise ValueError("The users section in secrets is empty.")
 
-    return users, False
+    return users
 
 
 def get_admin_code():
@@ -58,6 +47,25 @@ def get_admin_code():
         return str(st.secrets["admin_code"])
     except (FileNotFoundError, KeyError):
         return ""
+
+
+@st.cache_resource
+def get_supabase_client() -> Client:
+    try:
+        supabase_url = str(st.secrets["SUPABASE_URL"])
+        supabase_key = str(st.secrets["SUPABASE_SECRET_KEY"])
+    except (FileNotFoundError, KeyError) as error:
+        raise RuntimeError(
+            "Supabase is not configured. Add SUPABASE_URL and "
+            "SUPABASE_SECRET_KEY in Streamlit secrets."
+        ) from error
+
+    if not supabase_url or not supabase_key:
+        raise RuntimeError(
+            "SUPABASE_URL and SUPABASE_SECRET_KEY cannot be empty."
+        )
+
+    return create_client(supabase_url, supabase_key)
 
 
 # --------------------------------------------------
@@ -206,24 +214,6 @@ def initialize_state():
             st.session_state[key] = value
 
 
-def initialize_database():
-    with sqlite3.connect(DATABASE_FILE) as connection:
-        connection.execute(
-            """
-            CREATE TABLE IF NOT EXISTS verification_history (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                timestamp TEXT NOT NULL,
-                person TEXT NOT NULL,
-                predicted_class TEXT NOT NULL,
-                result TEXT NOT NULL,
-                confidence REAL NOT NULL,
-                processing_time REAL NOT NULL
-            )
-            """
-        )
-        connection.commit()
-
-
 # --------------------------------------------------
 # Load trained model
 # --------------------------------------------------
@@ -292,31 +282,16 @@ def save_verification_log(
     confidence,
     processing_time,
 ):
-    initialize_database()
-
-    with sqlite3.connect(DATABASE_FILE) as connection:
-        connection.execute(
-            """
-            INSERT INTO verification_history (
-                timestamp,
-                person,
-                predicted_class,
-                result,
-                confidence,
-                processing_time
-            )
-            VALUES (?, ?, ?, ?, ?, ?)
-            """,
-            (
-                datetime.now().isoformat(timespec="seconds"),
-                selected_person,
-                predicted_class,
-                result,
-                round(confidence, 2),
-                round(processing_time, 3),
-            ),
-        )
-        connection.commit()
+    client = get_supabase_client()
+    client.table("verification_history").insert(
+        {
+            "person": selected_person,
+            "predicted_class": predicted_class,
+            "result": result,
+            "confidence": round(confidence, 2),
+            "processing_time": round(processing_time, 3),
+        }
+    ).execute()
 
 
 # --------------------------------------------------
@@ -412,30 +387,21 @@ def show_history():
     if not hmac.compare_digest(entered_code, admin_code):
         return
 
-    initialize_database()
-
-    with sqlite3.connect(DATABASE_FILE) as connection:
-        rows = connection.execute(
-            """
-            SELECT timestamp, person, predicted_class,
-                   result, confidence, processing_time
-            FROM verification_history
-            ORDER BY id DESC
-            LIMIT 10
-            """
-        ).fetchall()
+    client = get_supabase_client()
+    response = (
+        client.table("verification_history")
+        .select(
+            "created_at, person, predicted_class, result, "
+            "confidence, processing_time"
+        )
+        .order("created_at", desc=True)
+        .limit(10)
+        .execute()
+    )
+    rows = response.data or []
 
     if not rows:
         return
-
-    columns = [
-        "timestamp",
-        "person",
-        "predicted_class",
-        "result",
-        "confidence",
-        "processing_time",
-    ]
 
     st.markdown(
         """
@@ -449,7 +415,7 @@ def show_history():
     )
 
     st.dataframe(
-        [dict(zip(columns, row)) for row in rows],
+        pd.DataFrame(rows),
         use_container_width=True,
         hide_index=True,
     )
@@ -462,14 +428,7 @@ def show_history():
 def main():
     apply_custom_style()
     initialize_state()
-    initialize_database()
-    users, using_demo_codes = load_users()
-
-    if using_demo_codes:
-        st.warning(
-            "Demo codes are active. Configure Streamlit secrets "
-            "before using real users."
-        )
+    users = load_users()
 
     st.markdown(
         """
@@ -599,7 +558,13 @@ def main():
         if verify_button:
             expected_code = users[selected_person]
 
-            if not hmac.compare_digest(code, expected_code):
+            submitted_code = str(code)
+            configured_code = str(expected_code)
+
+            if not hmac.compare_digest(
+                submitted_code.encode("utf-8"),
+                configured_code.encode("utf-8"),
+            ):
                 st.error("Incorrect access code.")
 
             elif not st.session_state.signature_exists:
