@@ -1,25 +1,59 @@
 from datetime import datetime
 from pathlib import Path
-import hashlib
+import json
 
 import numpy as np
 import pandas as pd
 import streamlit as st
+import tensorflow as tf
 from streamlit_drawable_canvas import st_canvas
 
 
 # --------------------------------------------------
-# Project paths
+# Paths
 # --------------------------------------------------
 
 BASE_DIR = Path(__file__).resolve().parent
 
+MODEL_FILE = BASE_DIR / "artifacts" / "signature_model.keras"
+CLASSES_FILE = BASE_DIR / "artifacts" / "class_names.json"
+
 LOG_DIRECTORY = BASE_DIR / "verification_logs"
-LOG_FILE = LOG_DIRECTORY / "demo_history.csv"
+LOG_FILE = LOG_DIRECTORY / "verification_history.csv"
+
+IMAGE_SIZE = (224, 224)
 
 
 # --------------------------------------------------
-# Page configuration
+# Demo users
+# --------------------------------------------------
+
+USERS = {
+    "person_1": {
+        "name": "person_1",
+        "code": "0000",
+    },
+    "person_2": {
+        "name": "person_2",
+        "code": "1111",
+    },
+    "person_3": {
+        "name": "person_3",
+        "code": "2222",
+    },
+    "person_4": {
+        "name": "person_4",
+        "code": "3333",
+    },
+    "person_5": {
+        "name": "person_5",
+        "code": "4444",
+    },
+}
+
+
+# --------------------------------------------------
+# Page settings
 # --------------------------------------------------
 
 st.set_page_config(
@@ -31,7 +65,7 @@ st.set_page_config(
 
 
 # --------------------------------------------------
-# Custom style
+# Style
 # --------------------------------------------------
 
 def apply_custom_style():
@@ -39,12 +73,11 @@ def apply_custom_style():
         """
         <style>
         .stApp {
-            background:
-                linear-gradient(
-                    135deg,
-                    #f7f9fc 0%,
-                    #eef3f8 100%
-                );
+            background: linear-gradient(
+                135deg,
+                #f7f9fc 0%,
+                #eef3f8 100%
+            );
         }
 
         .main-title {
@@ -63,14 +96,13 @@ def apply_custom_style():
             margin-bottom: 30px;
         }
 
-        .section-card {
+        .section-card,
+        .status-card {
             background: #ffffff;
             border-radius: 18px;
             padding: 24px;
             margin-bottom: 20px;
-            box-shadow:
-                0 8px 24px
-                rgba(31, 45, 61, 0.08);
+            box-shadow: 0 8px 24px rgba(31, 45, 61, 0.08);
             border: 1px solid #e8edf3;
         }
 
@@ -82,14 +114,7 @@ def apply_custom_style():
         }
 
         .status-card {
-            background: #ffffff;
-            border-radius: 18px;
-            padding: 22px;
             text-align: center;
-            box-shadow:
-                0 8px 24px
-                rgba(31, 45, 61, 0.08);
-            border: 1px solid #e8edf3;
         }
 
         .status-label {
@@ -122,23 +147,17 @@ def apply_custom_style():
             margin-bottom: 15px;
         }
 
-        div[data-testid="stForm"] {
-            border: none;
-            padding: 0;
+        button {
+            border-radius: 10px !important;
+            min-height: 44px;
         }
 
         button[kind="primary"] {
             background-color: #315efb;
-            border-radius: 10px;
             border: none;
             min-height: 48px;
             font-size: 16px;
             font-weight: 700;
-        }
-
-        button {
-            border-radius: 10px !important;
-            min-height: 44px;
         }
 
         @media only screen and (max-width: 700px) {
@@ -167,6 +186,7 @@ def apply_custom_style():
 def initialize_state():
     defaults = {
         "verification_result": "Waiting",
+        "predicted_class": "-",
         "confidence": 0.0,
         "processing_time": 0.0,
         "signature_exists": False,
@@ -179,96 +199,103 @@ def initialize_state():
 
 
 # --------------------------------------------------
-# Demo verification
+# Load model
 # --------------------------------------------------
 
-def calculate_demo_score(
-    username,
-    password,
-    signature_image,
-):
-    """
-    This is only a temporary demo score.
+@st.cache_resource
+def load_signature_model():
+    if not MODEL_FILE.exists():
+        raise FileNotFoundError(
+            f"Model file was not found: {MODEL_FILE}"
+        )
 
-    It will be replaced later with the real CNN model.
-    """
+    if not CLASSES_FILE.exists():
+        raise FileNotFoundError(
+            f"Class names file was not found: {CLASSES_FILE}"
+        )
 
-    image_bytes = signature_image.tobytes()
+    model = tf.keras.models.load_model(MODEL_FILE)
 
-    source = (
-        f"{username}|"
-        f"{password}|"
-        f"{len(image_bytes)}|"
-        f"{image_bytes[:1000]}"
-    ).encode(
-        "utf-8",
-        errors="ignore",
-    )
+    with open(CLASSES_FILE, "r", encoding="utf-8") as file:
+        class_names = json.load(file)
 
-    digest = hashlib.sha256(
-        source
-    ).hexdigest()
-
-    numeric_value = int(
-        digest[:8],
-        16,
-    )
-
-    score = 70.0 + (
-        numeric_value % 2900
-    ) / 100.0
-
-    return min(
-        round(score, 2),
-        99.0,
-    )
+    return model, class_names
 
 
 # --------------------------------------------------
-# Save verification history
+# Prediction
 # --------------------------------------------------
 
-def save_demo_log(
-    username,
+def predict_signature(signature_image):
+    model, class_names = load_signature_model()
+
+    if signature_image.ndim != 3:
+        raise ValueError("Invalid signature image.")
+
+    # Canvas image is RGBA; the model expects RGB.
+    image = signature_image[:, :, :3].astype(np.float32)
+
+    image = tf.image.resize(
+        image,
+        IMAGE_SIZE,
+    )
+
+    image = image / 255.0
+    image = tf.expand_dims(image, axis=0)
+
+    predictions = model.predict(
+        image,
+        verbose=0,
+    )[0]
+
+    predicted_index = int(np.argmax(predictions))
+    predicted_class = class_names[predicted_index]
+    confidence = float(predictions[predicted_index]) * 100
+
+    return predicted_class, confidence
+
+
+# --------------------------------------------------
+# Save history
+# --------------------------------------------------
+
+def save_verification_log(
+    selected_person,
+    predicted_class,
     result,
     confidence,
     processing_time,
 ):
-    LOG_DIRECTORY.mkdir(
-        exist_ok=True
-    )
+    LOG_DIRECTORY.mkdir(exist_ok=True)
 
-    new_record = pd.DataFrame(
+    record = pd.DataFrame(
         [
             {
                 "timestamp": datetime.now().isoformat(
                     timespec="seconds"
                 ),
-                "username": username,
+                "person": selected_person,
+                "predicted_class": predicted_class,
                 "result": result,
-                "confidence": confidence,
-                "processing_time": processing_time,
-                "mode": "demo",
+                "confidence": round(confidence, 2),
+                "processing_time": round(
+                    processing_time,
+                    3,
+                ),
             }
         ]
     )
 
     if LOG_FILE.exists():
-        old_records = pd.read_csv(
-            LOG_FILE
-        )
-
-        all_records = pd.concat(
-            [
-                old_records,
-                new_record,
-            ],
+        old_records = pd.read_csv(LOG_FILE)
+        records = pd.concat(
+            [old_records, record],
             ignore_index=True,
         )
     else:
-        all_records = new_record
+        records = record
 
-    all_records.to_csv(
+    records.to_csv(
         LOG_FILE,
         index=False,
         encoding="utf-8-sig",
@@ -281,12 +308,13 @@ def save_demo_log(
 
 def show_result():
     result = st.session_state.verification_result
+    predicted_class = st.session_state.predicted_class
     confidence = st.session_state.confidence
     processing_time = st.session_state.processing_time
 
-    if result == "Accepted":
+    if result == "Original":
         result_color = "#198754"
-    elif result == "Rejected":
+    elif result == "Forged":
         result_color = "#dc3545"
     else:
         result_color = "#172033"
@@ -302,17 +330,13 @@ def show_result():
         unsafe_allow_html=True,
     )
 
-    result_column, confidence_column, time_column = (
-        st.columns(3)
-    )
+    result_column, confidence_column, time_column = st.columns(3)
 
     with result_column:
         st.markdown(
             f"""
             <div class="status-card">
-                <div class="status-label">
-                    Result
-                </div>
+                <div class="status-label">Result</div>
                 <div class="status-value"
                      style="color: {result_color};">
                     {result}
@@ -326,9 +350,7 @@ def show_result():
         st.markdown(
             f"""
             <div class="status-card">
-                <div class="status-label">
-                    Similarity
-                </div>
+                <div class="status-label">Confidence</div>
                 <div class="status-value">
                     {confidence:.2f}%
                 </div>
@@ -341,15 +363,18 @@ def show_result():
         st.markdown(
             f"""
             <div class="status-card">
-                <div class="status-label">
-                    Processing Time
-                </div>
+                <div class="status-label">Processing Time</div>
                 <div class="status-value">
                     {processing_time:.3f}s
                 </div>
             </div>
             """,
             unsafe_allow_html=True,
+        )
+
+    if predicted_class != "-":
+        st.info(
+            f"Model prediction: {predicted_class}"
         )
 
 
@@ -361,9 +386,7 @@ def show_history():
     if not LOG_FILE.exists():
         return
 
-    history = pd.read_csv(
-        LOG_FILE
-    )
+    history = pd.read_csv(LOG_FILE)
 
     st.markdown(
         """
@@ -398,12 +421,11 @@ def main():
         </div>
 
         <div class="subtitle">
-            Secure identity verification using handwritten signatures
+            Verify whether a signature is original or forged
         </div>
 
         <div class="demo-label">
-            Demonstration mode is active.
-            The AI model will be connected after dataset collection.
+            Demonstration mode. Use the test names and codes.
         </div>
         """,
         unsafe_allow_html=True,
@@ -413,10 +435,6 @@ def main():
         [1, 1.35],
         gap="large",
     )
-
-    # --------------------------------------------------
-    # User information
-    # --------------------------------------------------
 
     with left_column:
         st.markdown(
@@ -429,53 +447,45 @@ def main():
             unsafe_allow_html=True,
         )
 
-        with st.form("authentication_form"):
-            username = st.text_input(
-                "Username",
-                placeholder="Enter username",
-            )
-
-            password = st.text_input(
-                "Password",
-                type="password",
-                placeholder="Enter password",
-            )
-
-            st.form_submit_button(
-                "Continue",
-                use_container_width=True,
-            )
-
-        st.markdown(
-            "</div>",
-            unsafe_allow_html=True,
+        selected_person = st.selectbox(
+            "Select person",
+            options=list(USERS.keys()),
+            format_func=lambda person: USERS[person]["name"],
         )
 
-        # تم تعديل هذا القسم حتى لا تظهر وسوم HTML ككود
+        code = st.text_input(
+            "Access code",
+            type="password",
+            placeholder="Enter your code",
+        )
+
         st.markdown(
             """
-<div class="section-card">
-    <div class="section-title">
-        Verification Information
-    </div>
-</div>
-""",
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+
+        st.markdown(
+            """
+            <div class="section-card">
+                <div class="section-title">
+                    Verification Information
+                </div>
+            </div>
+            """,
             unsafe_allow_html=True,
         )
 
         st.write(
-            "Enter your username and password, then draw your "
-            "signature in the signature area."
+            "Select the person, enter the correct code, "
+            "then draw the signature."
         )
 
         st.write(
-            "The final version will compare the signature with "
-            "the trained CNN model."
+            "The model will compare the signature with "
+            "that person's original and forged signatures."
         )
-
-    # --------------------------------------------------
-    # Signature area
-    # --------------------------------------------------
 
     with right_column:
         st.markdown(
@@ -489,7 +499,7 @@ def main():
         )
 
         st.write(
-            "Draw your signature using the mouse, touch screen, "
+            "Draw the signature using the mouse, touch screen, "
             "or XP-Pen."
         )
 
@@ -502,25 +512,19 @@ def main():
             width=700,
             drawing_mode="freedraw",
             update_streamlit=True,
-
-            # This fixes:
-            # RuntimeError: image_data was not requested
             return_image_data=True,
-
             key=(
                 f"signature_canvas_"
                 f"{st.session_state.canvas_version}"
             ),
         )
 
-        # Safely read the canvas image
         if canvas_result.image_data is not None:
             image_data = canvas_result.image_data
 
-            if np.any(image_data[:, :, 3] > 0):
-                st.session_state.signature_exists = True
-            else:
-                st.session_state.signature_exists = False
+            st.session_state.signature_exists = bool(
+                np.any(image_data[:, :, 3] > 0)
+            )
 
         clear_button = st.button(
             "Clear Signature",
@@ -539,75 +543,66 @@ def main():
         )
 
         if verify_button:
-            if not username.strip():
-                st.error(
-                    "Please enter a username."
-                )
+            expected_code = USERS[selected_person]["code"]
 
-            elif not password.strip():
-                st.error(
-                    "Please enter a password."
-                )
+            if code != expected_code:
+                st.error("Incorrect access code.")
 
             elif not st.session_state.signature_exists:
-                st.error(
-                    "Please draw a signature."
-                )
+                st.error("Please draw a signature.")
 
             elif canvas_result.image_data is None:
-                st.error(
-                    "Signature image is not available."
-                )
+                st.error("Signature image is not available.")
 
             else:
                 start_time = datetime.now()
 
-                score = calculate_demo_score(
-                    username=username,
-                    password=password,
-                    signature_image=canvas_result.image_data,
-                )
+                try:
+                    predicted_class, confidence = (
+                        predict_signature(
+                            canvas_result.image_data
+                        )
+                    )
 
-                if score >= 80.0:
-                    result = "Accepted"
-                else:
-                    result = "Rejected"
+                    genuine_class = (
+                        f"{selected_person}_genuine"
+                    )
 
-                end_time = datetime.now()
+                    if predicted_class == genuine_class:
+                        result = "Original"
+                    else:
+                        result = "Forged"
 
-                processing_time = (
-                    end_time - start_time
-                ).total_seconds()
+                    processing_time = (
+                        datetime.now() - start_time
+                    ).total_seconds()
 
-                st.session_state.verification_result = (
-                    result
-                )
+                    st.session_state.verification_result = result
+                    st.session_state.predicted_class = predicted_class
+                    st.session_state.confidence = confidence
+                    st.session_state.processing_time = processing_time
 
-                st.session_state.confidence = (
-                    score
-                )
+                    save_verification_log(
+                        selected_person=selected_person,
+                        predicted_class=predicted_class,
+                        result=result,
+                        confidence=confidence,
+                        processing_time=processing_time,
+                    )
 
-                st.session_state.processing_time = (
-                    processing_time
-                )
+                    st.rerun()
 
-                save_demo_log(
-                    username=username,
-                    result=result,
-                    confidence=score,
-                    processing_time=processing_time,
-                )
-
-                st.rerun()
+                except Exception as error:
+                    st.error(
+                        f"Model prediction failed: {error}"
+                    )
 
         st.markdown(
-            "</div>",
+            """
+            </div>
+            """,
             unsafe_allow_html=True,
         )
-
-    # --------------------------------------------------
-    # Result and history
-    # --------------------------------------------------
 
     show_result()
     show_history()
@@ -615,7 +610,7 @@ def main():
     st.markdown(
         """
         <div class="footer">
-            Demonstration interface for the AI signature verification project
+            AI signature verification demonstration
         </div>
         """,
         unsafe_allow_html=True,
