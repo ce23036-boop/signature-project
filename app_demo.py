@@ -463,9 +463,9 @@ def main():
             unsafe_allow_html=True,
         )
 
-        selected_person = st.selectbox(
-            "Select person",
-            options=list(users.keys()),
+        selected_person = st.text_input(
+            "Username",
+            placeholder="Enter your username",
         )
 
         code = st.text_input(
@@ -556,65 +556,75 @@ def main():
         )
 
         if verify_button:
-            expected_code = users[selected_person]
+            normalized_person = selected_person.strip()
 
-            submitted_code = str(code)
-            configured_code = str(expected_code)
+            if not normalized_person:
+                st.error("Please enter your username.")
 
-            if not hmac.compare_digest(
-                submitted_code.encode("utf-8"),
-                configured_code.encode("utf-8"),
-            ):
-                st.error("Incorrect access code.")
-
-            elif not st.session_state.signature_exists:
-                st.error("Please draw a signature.")
-
-            elif canvas_result.image_data is None:
-                st.error("Signature image is not available.")
+            elif normalized_person not in users:
+                st.error("Username not found.")
 
             else:
-                start_time = datetime.now()
+                expected_code = users[normalized_person]
+                submitted_code = str(code)
+                configured_code = str(expected_code)
 
-                try:
-                    predicted_class, confidence = (
-                        predict_signature(
-                            canvas_result.image_data
+                valid_code = hmac.compare_digest(
+                    submitted_code.encode("utf-8"),
+                    configured_code.encode("utf-8"),
+                )
+
+                if not valid_code:
+                    st.error("Incorrect access code.")
+
+                elif not st.session_state.signature_exists:
+                    st.error("Please draw a signature.")
+
+                elif canvas_result.image_data is None:
+                    st.error("Signature image is not available.")
+
+                else:
+                    start_time = datetime.now()
+
+                    try:
+                        predicted_class, confidence = (
+                            predict_signature(
+                                canvas_result.image_data
+                            )
                         )
-                    )
 
-                    genuine_class = (
-                        f"{selected_person}_genuine"
-                    )
+                        genuine_class = (
+                            f"{normalized_person}_genuine"
+                        )
 
-                    if predicted_class == genuine_class:
-                        result = "Original"
-                    else:
-                        result = "Forged"
+                        if predicted_class == genuine_class:
+                            result = "Original"
+                        else:
+                            result = "Forged"
 
-                    processing_time = (
-                        datetime.now() - start_time
-                    ).total_seconds()
+                        processing_time = (
+                            datetime.now() - start_time
+                        ).total_seconds()
 
-                    st.session_state.verification_result = result
-                    st.session_state.predicted_class = predicted_class
-                    st.session_state.confidence = confidence
-                    st.session_state.processing_time = processing_time
+                        st.session_state.verification_result = result
+                        st.session_state.predicted_class = predicted_class
+                        st.session_state.confidence = confidence
+                        st.session_state.processing_time = processing_time
 
-                    save_verification_log(
-                        selected_person=selected_person,
-                        predicted_class=predicted_class,
-                        result=result,
-                        confidence=confidence,
-                        processing_time=processing_time,
-                    )
+                        save_verification_log(
+                            selected_person=normalized_person,
+                            predicted_class=predicted_class,
+                            result=result,
+                            confidence=confidence,
+                            processing_time=processing_time,
+                        )
 
-                    st.rerun()
+                        st.rerun()
 
-                except Exception as error:
-                    st.error(
-                        f"Model prediction failed: {error}"
-                    )
+                    except Exception as error:
+                        st.error(
+                            f"Model prediction failed: {error}"
+                        )
 
         st.markdown(
             "</div>",
